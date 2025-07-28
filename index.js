@@ -571,6 +571,7 @@ app.get('/', (req, res) => {
             • Loader.to: Direct API integration<br>
             • Supports YouTube Shorts, Instagram Reels, TikTok, Facebook
         </div>
+        
         <div class="input-group">
             <input type="url" id="videoUrl" placeholder="Enter video URL (YouTube, Instagram, TikTok, Facebook)" />
             <button onclick="extractUrls()" id="extractBtn">🔥 Extract URLs</button>
@@ -609,24 +610,25 @@ app.get('/', (req, res) => {
                     let html = `
                         <div class="container">
                             <div class="success">
-                                🎉 Successfully extracted ${data.total} direct URLs from: ${data.services.join(', ')}
+                                🎉 Successfully extracted \${data.total} direct URLs from: \${data.services.join(', ')}
                             </div>
                         </div>
                     `;
+                    
                     data.downloads.forEach((item, index) => {
                         html += `
                             <div class="container">
                                 <div class="url-item">
-                                    <h4>📱 ${item.quality} - ${item.format.toUpperCase()} (${item.type})</h4>
-                                    <p><strong>Service:</strong> ${item.service}</p>
-                                    ${item.size ? `<p><strong>Size:</strong> ${item.size}</p>` : ''}
+                                    <h4>📱 \${item.quality} - \${item.format.toUpperCase()} (\${item.type})</h4>
+                                    <p><strong>Service:</strong> \${item.service}</p>
+                                    \${item.size ? \`<p><strong>Size:</strong> \${item.size}</p>\` : ''}
                                     <div style="background:#2d3748;color:#e2e8f0;padding:10px;border-radius:5px;margin:10px 0;font-family:monospace;word-break:break-all;font-size:12px;">
-                                        ${item.directUrl}
+                                        \${item.directUrl}
                                     </div>
-                                    <button onclick="copyUrl('${item.directUrl}')" style="background:#28a745;color:white;border:none;padding:8px 16px;border-radius:4px;margin-right:10px;">
+                                    <button onclick="copyUrl('\${item.directUrl}')" style="background:#28a745;color:white;border:none;padding:8px 16px;border-radius:4px;margin-right:10px;">
                                         📋 Copy URL
                                     </button>
-                                       ref="${item.directUrl}" target="_blank" style="background:#17a2b8;color:white;text-decoration:none;padding:8px 16px;border-radius:4px;">
+                                    <a href="\${item.directUrl}" target="_blank" style="background:#17a2b8;color:white;text-decoration:none;padding:8px 16px;border-radius:4px;">
                                         🔗 Open Direct
                                     </a>
                                 </div>
@@ -640,7 +642,7 @@ app.get('/', (req, res) => {
                         <div class="container">
                             <div class="error">
                                 ❌ No direct URLs found<br>
-                                Error: ${data.error || 'Services may be down or video is private'}
+                                Error: \${data.error || 'Services may be down or video is private'}
                             </div>
                         </div>
                     `;
@@ -648,7 +650,7 @@ app.get('/', (req, res) => {
             } catch (error) {
                 resultsDiv.innerHTML = `
                     <div class="container">
-                        <div class="error">❌ Network Error: ${error.message}</div>
+                        <div class="error">❌ Network Error: \${error.message}</div>
                     </div>
                 `;
             } finally {
