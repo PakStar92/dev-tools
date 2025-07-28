@@ -600,6 +600,7 @@ app.get('/', (req, res) => {
                     <p>Processing through Y2Mate, 9Convert, SSYouTube, Loader.to</p>
                 </div>
             `;
+            
             try {
                 const response = await fetch('/api/extract?url=' + encodeURIComponent(url));
                 const data = await response.json();
@@ -612,7 +613,6 @@ app.get('/', (req, res) => {
                             </div>
                         </div>
                     `;
-                    
                     data.downloads.forEach((item, index) => {
                         html += `
                             <div class="container">
