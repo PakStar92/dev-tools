@@ -1,205 +1,212 @@
-// Multi-Site Video Downloader using HTML Parsing
-// Supports YouTube, Instagram, TikTok, Facebook, etc.
+// Direct CDN URL Video Downloader - No File Storage
+// Returns direct download URLs by parsing HTML forms and APIs
 
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const fs = require('fs');
-const path = require('path');
-const { promisify } = require('util');
-const stream = require('stream');
-const pipeline = promisify(stream.pipeline);
+const { URLSearchParams } = require('url');
 
 const app = express();
 app.use(express.json());
 app.use(express.static('public'));
 
 // Configuration
-const DOWNLOAD_FOLDER = './downloads';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const TIMEOUT = 30000;
 
-// Ensure download folder exists
-if (!fs.existsSync(DOWNLOAD_FOLDER)) {
-    fs.mkdirSync(DOWNLOAD_FOLDER, { recursive: true });
-}
-
-// Video downloader services
+// Service configurations with their form parsing methods
 const SERVICES = {
-    savefrom: 'https://savefrom.net',
-    savetube: 'https://savetube.me',
-    y2mate: 'https://www.y2mate.com',
-    ssyoutube: 'https://ssyoutube.com',
-    keepvid: 'https://keepvid.pro'
+    savefrom: {
+        url: 'https://savefrom.net',
+        method: 'parseFormSubmission',
+        formSelector: '#sf_form',
+        inputName: 'sf_url'
+    },
+    savetube: {
+        url: 'https://savetube.me',
+        method: 'parseAjaxAPI',
+        apiEndpoint: '/api/convert',
+        formData: { format: 'mp4' }
+    },
+    y2mate: {
+        url: 'https://www.y2mate.com',
+        method: 'parseMultiStep',
+        analyzeEndpoint: '/mates/analyze/ajax',
+        convertEndpoint: '/mates/convert'
+    },
+    loader: {
+        url: 'https://loader.to',
+        method: 'parseDirectAPI',
+        apiEndpoint: '/api/button',
+        convertEndpoint: '/api/convert'
+    },
+    ytmp3: {
+        url: 'https://ytmp3.cc',
+        method: 'parseFormSubmission',
+        formSelector: '#convert-form',
+        inputName: 'url'
+    }
 };
 
-// Utility functions
-function cleanUrl(url) {
-    // Remove tracking parameters and normalize URL
-    try {
-        const urlObj = new URL(url);
-        // Remove common tracking parameters
-        const paramsToRemove = ['utm_source', 'utm_medium', 'utm_campaign', 'fbclid', 'gclid'];
-        paramsToRemove.forEach(param => urlObj.searchParams.delete(param));
-        return urlObj.toString();
-    } catch (e) {
-        return url;
-    }
-}
-
-function generateFilename(title, ext = 'mp4') {
-    // Clean title for filename
-    const clean = title.replace(/[^a-zA-Z0-9\s\-_]/g, '').trim();
-    const short = clean.substring(0, 100); // Limit length
-    return `${short}_${Date.now()}.${ext}`;
-}
-
-function getVideoId(url) {
-    // Extract YouTube video ID from various URL formats
-    const patterns = [
-        /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
-        /youtube\.com\/v\/([^&\n?#]+)/
-    ];
-    
-    for (const pattern of patterns) {
-        const match = url.match(pattern);
-        if (match) return match[1];
-    }
-    return null;
-}
-
-// Service parsers
-class VideoDownloaderService {
+class DirectVideoDownloader {
     constructor() {
         this.axios = axios.create({
+            timeout: TIMEOUT,
             headers: {
                 'User-Agent': USER_AGENT,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
+                'Accept-Encoding': 'gzip, deflate, br',
                 'DNT': '1',
                 'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
-            },
-            timeout: 30000,
-            maxRedirects: 5
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none'
+            }
         });
     }
 
-    async parseSaveFrom(videoUrl) {
+    // Extract video ID from URL
+    getVideoId(url) {
+        const patterns = [
+            /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+            /youtube\.com\/v\/([^&\n?#]+)/,
+            /(?:instagram\.com\/p\/|instagram\.com\/reel\/)([^\/\?]+)/,
+            /(?:tiktok\.com\/@[^\/]+\/video\/|vm\.tiktok\.com\/)([^\/\?]+)/
+        ];
+        
+        for (const pattern of patterns) {
+            const match = url.match(pattern);
+            if (match) return match[1];
+        }
+        return null;
+    }
+
+    // Parse SaveFrom.net HTML form
+    async parseSaveFromNet(videoUrl) {
         try {
-            console.log('[SaveFrom] Parsing:', videoUrl);
-            const response = await this.axios.get(`${SERVICES.savefrom}/process`, {
-                params: { url: videoUrl }
+            console.log('[SaveFrom] Parsing form for:', videoUrl);
+            
+            // Step 1: Get the main page to extract form data
+            const mainPage = await this.axios.get(SERVICES.savefrom.url);
+            const $ = cheerio.load(mainPage.data);
+            
+            // Extract form data
+            const form = $(SERVICES.savefrom.formSelector);
+            const action = form.attr('action') || '/process';
+            const method = form.attr('method') || 'POST';
+            
+            // Get all hidden form fields
+            const formData = new URLSearchParams();
+            form.find('input[type="hidden"]').each((i, el) => {
+                const name = $(el).attr('name');
+                const value = $(el).attr('value');
+                if (name && value) {
+                    formData.append(name, value);
+                }
             });
-
-            const $ = cheerio.load(response.data);
+            
+            // Add the video URL
+            formData.append(SERVICES.savefrom.inputName, videoUrl);
+            
+            // Step 2: Submit form to get download page
+            const submitResponse = await this.axios.post(
+                SERVICES.savefrom.url + action,
+                formData,
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Referer': SERVICES.savefrom.url,
+                        'Origin': SERVICES.savefrom.url
+                    }
+                }
+            );
+            
+            // Step 3: Parse download links from response
+            const downloadPage = cheerio.load(submitResponse.data);
             const downloads = [];
-
-            // Parse download links
-            $('.download-link, .link-download, a[href*="download"]').each((i, element) => {
-                const $el = $(element);
-                const downloadUrl = $el.attr('href');
-                const quality = $el.find('.quality, .resolution').text().trim() || 
-                              $el.text().match(/(\d+p|\d+x\d+|HD|SD)/i)?.[0] || 'Unknown';
-                const format = $el.text().match(/(mp4|webm|mp3|m4a)/i)?.[0] || 'mp4';
-
-                if (downloadUrl && downloadUrl.startsWith('http')) {
+            
+            // Look for direct download links
+            downloadPage('.download-link, a[href*="googlevideo.com"], a[href*="fbcdn.net"], a[href*="cdninstagram.com"]').each((i, element) => {
+                const $el = downloadPage(element);
+                const href = $el.attr('href');
+                
+                if (href && (href.includes('googlevideo.com') || href.includes('fbcdn.net') || href.includes('cdninstagram.com'))) {
+                    const quality = $el.text().match(/(\d+p|\d+x\d+|HD|SD)/i)?.[0] || 'Unknown';
+                    const format = href.match(/mime=video%2F(\w+)|\.(\w+)/)?.[1] || 'mp4';
+                    
                     downloads.push({
-                        url: downloadUrl,
+                        directUrl: href,
                         quality: quality,
-                        format: format.toLowerCase(),
-                        service: 'savefrom'
+                        format: format,
+                        service: 'savefrom',
+                        type: 'video'
                     });
                 }
             });
-
-            // Also check for direct video sources
-            $('video source, video').each((i, element) => {
-                const src = $(element).attr('src');
-                if (src && src.startsWith('http')) {
-                    downloads.push({
-                        url: src,
-                        quality: 'Direct',
-                        format: 'mp4',
-                        service: 'savefrom'
-                    });
-                }
-            });
-
-            return { success: true, downloads, service: 'savefrom' };
+            
+            // Look for JavaScript variables containing URLs
+            const scriptText = downloadPage('script').text();
+            const urlMatches = scriptText.match(/https:\/\/[^"']+(?:googlevideo\.com|fbcdn\.net|cdninstagram\.com)[^"']*/g);
+            if (urlMatches) {
+                urlMatches.forEach(url => {
+                    if (!downloads.find(d => d.directUrl === url)) {
+                        downloads.push({
+                            directUrl: url,
+                            quality: 'Auto',
+                            format: 'mp4',
+                            service: 'savefrom',
+                            type: 'video'
+                        });
+                    }
+                });
+            }
+            
+            return downloads;
+            
         } catch (error) {
             console.error('[SaveFrom] Error:', error.message);
-            return { success: false, error: error.message };
+            return [];
         }
     }
 
-    async parseSaveTube(videoUrl) {
-        try {
-            console.log('[SaveTube] Parsing:', videoUrl);
-            
-            // SaveTube often requires POST request
-            const formData = new URLSearchParams();
-            formData.append('url', videoUrl);
-            
-            const response = await this.axios.post(`${SERVICES.savetube}/download`, formData, {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Referer': SERVICES.savetube
-                }
-            });
-
-            const $ = cheerio.load(response.data);
-            const downloads = [];
-
-            // Parse download options
-            $('.download-item, .download-option, .quality-item').each((i, element) => {
-                const $el = $(element);
-                const downloadUrl = $el.find('a').attr('href') || $el.attr('href');
-                const quality = $el.find('.quality, .resolution').text().trim() || 
-                              $el.text().match(/(\d+p|\d+x\d+|HD|SD)/i)?.[0] || 'Unknown';
-                const format = $el.text().match(/(mp4|webm|mp3|m4a)/i)?.[0] || 'mp4';
-
-                if (downloadUrl && downloadUrl.startsWith('http')) {
-                    downloads.push({
-                        url: downloadUrl,
-                        quality: quality,
-                        format: format.toLowerCase(),
-                        service: 'savetube'
-                    });
-                }
-            });
-
-            return { success: true, downloads, service: 'savetube' };
-        } catch (error) {
-            console.error('[SaveTube] Error:', error.message);
-            return { success: false, error: error.message };
-        }
-    }
-
+    // Parse Y2Mate multi-step process
     async parseY2Mate(videoUrl) {
         try {
-            console.log('[Y2Mate] Parsing:', videoUrl);
+            console.log('[Y2Mate] Multi-step parsing for:', videoUrl);
             
-            // Y2Mate has a multi-step process
-            const analyzeResponse = await this.axios.post(`${SERVICES.y2mate}/mates/analyze/ajax`, {
+            const videoId = this.getVideoId(videoUrl);
+            if (!videoId) throw new Error('Could not extract video ID');
+            
+            // Step 1: Analyze video
+            const analyzeData = new URLSearchParams({
                 url: videoUrl,
-                q_auto: 0,
-                ajax: 1
-            }, {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Referer': `${SERVICES.y2mate}/youtube/${getVideoId(videoUrl)}`
-                }
+                q_auto: '0',
+                ajax: '1'
             });
-
+            
+            const analyzeResponse = await this.axios.post(
+                SERVICES.y2mate.url + SERVICES.y2mate.analyzeEndpoint,
+                analyzeData,
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Referer': `${SERVICES.y2mate.url}/youtube/${videoId}`,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                }
+            );
+            
             if (analyzeResponse.data.status !== 'ok') {
                 throw new Error('Y2Mate analysis failed');
             }
-
+            
+            // Step 2: Parse conversion options
             const $ = cheerio.load(analyzeResponse.data.result);
             const downloads = [];
-
-            // Parse video and audio options
+            
+            // Extract conversion options
             $('.download-items tr').each((i, element) => {
                 const $row = $(element);
                 const quality = $row.find('.text-left').first().text().trim();
@@ -216,306 +223,450 @@ class VideoDownloaderService {
                         format: format.toLowerCase(),
                         fquality: fquality,
                         service: 'y2mate',
+                        videoId: videoId,
                         needsConversion: true
                     });
                 }
             });
-
-            return { success: true, downloads, service: 'y2mate', videoId: getVideoId(videoUrl) };
+            
+            // Step 3: Convert each option to get direct URLs
+            const directDownloads = [];
+            for (const download of downloads.slice(0, 3)) { // Limit to 3 to avoid spam
+                try {
+                    const convertData = new URLSearchParams({
+                        vid: download.videoId,
+                        k: download.k,
+                        ftype: download.format,
+                        fquality: download.fquality,
+                        token: '',
+                        timeExpire: '',
+                        client: 'y2mate'
+                    });
+                    
+                    const convertResponse = await this.axios.post(
+                        SERVICES.y2mate.url + SERVICES.y2mate.convertEndpoint,
+                        convertData,
+                        {
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            }
+                        }
+                    );
+                    
+                    if (convertResponse.data.status === 'ok') {
+                        const $result = cheerio.load(convertResponse.data.result);
+                        const directUrl = $result('a[href*="download"]').first().attr('href');
+                        
+                        if (directUrl) {
+                            directDownloads.push({
+                                directUrl: directUrl,
+                                quality: download.quality,
+                                format: download.format,
+                                service: 'y2mate',
+                                type: download.format === 'mp3' ? 'audio' : 'video'
+                            });
+                        }
+                    }
+                } catch (convertError) {
+                    console.warn('[Y2Mate] Convert error for', download.quality, ':', convertError.message);
+                }
+            }
+            
+            return directDownloads;
+            
         } catch (error) {
             console.error('[Y2Mate] Error:', error.message);
-            return { success: false, error: error.message };
+            return [];
         }
     }
 
-    async convertY2Mate(videoId, k, ftype, fquality) {
+    // Parse Loader.to API
+    async parseLoaderTo(videoUrl) {
         try {
-            const convertResponse = await this.axios.post(`${SERVICES.y2mate}/mates/convert`, {
-                vid: videoId,
-                k: k,
-                ftype: ftype,
-                fquality: fquality,
-                token: '',
-                timeExpire: '',
-                client: 'y2mate'
+            console.log('[Loader.to] API parsing for:', videoUrl);
+            
+            // Step 1: Get conversion options
+            const apiResponse = await this.axios.get(
+                `${SERVICES.loader.url}${SERVICES.loader.apiEndpoint}/?url=${encodeURIComponent(videoUrl)}`,
+                {
+                    headers: {
+                        'Referer': SERVICES.loader.url,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                }
+            );
+            
+            const $ = cheerio.load(apiResponse.data);
+            const downloads = [];
+            
+            // Look for conversion buttons
+            $('.convert-btn, .download-btn').each((i, element) => {
+                const $btn = $(element);
+                const format = $btn.attr('data-format') || 'mp4';
+                const quality = $btn.attr('data-quality') || 'auto';
+                const convertUrl = $btn.attr('data-convert-url');
+                
+                if (convertUrl) {
+                    downloads.push({
+                        convertUrl: convertUrl,
+                        quality: quality,
+                        format: format,
+                        service: 'loader.to',
+                        needsConversion: true
+                    });
+                }
             });
-
-            if (convertResponse.data.status === 'ok') {
-                const $ = cheerio.load(convertResponse.data.result);
-                const downloadUrl = $('a[href*="download"]').attr('href');
-                return downloadUrl;
+            
+            // Step 2: Convert each option to get direct URLs
+            const directDownloads = [];
+            for (const download of downloads.slice(0, 2)) { // Limit requests
+                try {
+                    const convertResponse = await this.axios.get(download.convertUrl, {
+                        headers: {
+                            'Referer': SERVICES.loader.url,
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    });
+                    
+                    // Parse direct download URL from response
+                    if (typeof convertResponse.data === 'object' && convertResponse.data.url) {
+                        directDownloads.push({
+                            directUrl: convertResponse.data.url,
+                            quality: download.quality,
+                            format: download.format,
+                            service: 'loader.to',
+                            type: download.format === 'mp3' ? 'audio' : 'video'
+                        });
+                    } else {
+                        // Parse HTML response
+                        const $convert = cheerio.load(convertResponse.data);
+                        const directUrl = $convert('a[href*="download"], a[download]').first().attr('href');
+                        
+                        if (directUrl && directUrl.startsWith('http')) {
+                            directDownloads.push({
+                                directUrl: directUrl,
+                                quality: download.quality,
+                                format: download.format,
+                                service: 'loader.to',
+                                type: download.format === 'mp3' ? 'audio' : 'video'
+                            });
+                        }
+                    }
+                } catch (convertError) {
+                    console.warn('[Loader.to] Convert error:', convertError.message);
+                }
             }
-            return null;
+            
+            return directDownloads;
+            
         } catch (error) {
-            console.error('[Y2Mate Convert] Error:', error.message);
-            return null;
+            console.error('[Loader.to] Error:', error.message);
+            return [];
         }
     }
 
-    async getAllDownloadOptions(videoUrl) {
-        const cleanedUrl = cleanUrl(videoUrl);
-        const results = [];
+    // Parse SaveTube.me AJAX API
+    async parseSaveTube(videoUrl) {
+        try {
+            console.log('[SaveTube] AJAX parsing for:', videoUrl);
+            
+            // Step 1: Submit URL for processing
+            const formData = new URLSearchParams({
+                url: videoUrl,
+                format: 'mp4',
+                quality: 'auto'
+            });
+            
+            const response = await this.axios.post(
+                SERVICES.savetube.url + SERVICES.savetube.apiEndpoint,
+                formData,
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Referer': SERVICES.savetube.url,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                }
+            );
+            
+            const downloads = [];
+            
+            // Handle JSON response
+            if (typeof response.data === 'object') {
+                if (response.data.status === 'success' && response.data.downloads) {
+                    response.data.downloads.forEach(item => {
+                        if (item.url && item.url.startsWith('http')) {
+                            downloads.push({
+                                directUrl: item.url,
+                                quality: item.quality || 'auto',
+                                format: item.format || 'mp4',
+                                service: 'savetube',
+                                type: item.type || 'video'
+                            });
+                        }
+                    });
+                }
+            } else {
+                // Handle HTML response
+                const $ = cheerio.load(response.data);
+                $('.download-option, .download-link').each((i, element) => {
+                    const $el = $(element);
+                    const href = $el.find('a').attr('href') || $el.attr('href');
+                    
+                    if (href && href.startsWith('http')) {
+                        const quality = $el.find('.quality').text() || 'auto';
+                        const format = $el.find('.format').text() || 'mp4';
+                        
+                        downloads.push({
+                            directUrl: href,
+                            quality: quality,
+                            format: format.toLowerCase(),
+                            service: 'savetube',
+                            type: format === 'mp3' ? 'audio' : 'video'
+                        });
+                    }
+                });
+            }
+            
+            return downloads;
+            
+        } catch (error) {
+            console.error('[SaveTube] Error:', error.message);
+            return [];
+        }
+    }
 
-        // Try all services in parallel
-        const promises = [
-            this.parseSaveFrom(cleanedUrl),
-            this.parseSaveTube(cleanedUrl),
-            this.parseY2Mate(cleanedUrl)
-        ];
-
-        const responses = await Promise.allSettled(promises);
+    // Main function to get all direct URLs
+    async getAllDirectUrls(videoUrl) {
+        console.log('[DirectDownloader] Processing:', videoUrl);
         
-        responses.forEach((response, index) => {
-            if (response.status === 'fulfilled' && response.value.success) {
-                results.push(response.value);
-            }
-        });
-
-        // Combine and deduplicate results
+        const results = await Promise.allSettled([
+            this.parseSaveFromNet(videoUrl),
+            this.parseY2Mate(videoUrl),
+            this.parseLoaderTo(videoUrl),
+            this.parseSaveTube(videoUrl)
+        ]);
+        
         const allDownloads = [];
-        results.forEach(result => {
-            if (result.downloads) {
-                allDownloads.push(...result.downloads);
+        const services = [];
+        
+        results.forEach((result, index) => {
+            const serviceName = ['savefrom', 'y2mate', 'loader.to', 'savetube'][index];
+            
+            if (result.status === 'fulfilled' && result.value.length > 0) {
+                allDownloads.push(...result.value);
+                services.push(serviceName);
+                console.log(`[${serviceName}] Found ${result.value.length} direct URLs`);
+            } else if (result.status === 'rejected') {
+                console.error(`[${serviceName}] Failed:`, result.reason.message);
             }
         });
-
-        // Remove duplicates based on URL
-        const uniqueDownloads = allDownloads.filter((download, index, self) => 
-            index === self.findIndex(d => d.url === download.url)
-        );
-
+        
+        // Remove duplicates and sort by quality
+        const uniqueDownloads = this.removeDuplicates(allDownloads);
+        const sortedDownloads = this.sortByQuality(uniqueDownloads);
+        
         return {
-            success: uniqueDownloads.length > 0,
-            downloads: uniqueDownloads,
-            services: results.map(r => r.service)
+            success: sortedDownloads.length > 0,
+            downloads: sortedDownloads,
+            services: services,
+            total: sortedDownloads.length
         };
     }
 
-    async downloadFile(downloadUrl, filename) {
-        try {
-            console.log('[Download] Starting:', filename);
-            
-            const response = await this.axios({
-                method: 'GET',
-                url: downloadUrl,
-                responseType: 'stream',
-                headers: {
-                    'Referer': 'https://www.youtube.com/',
-                    'User-Agent': USER_AGENT
-                }
-            });
+    removeDuplicates(downloads) {
+        const seen = new Set();
+        return downloads.filter(download => {
+            const key = `${download.directUrl}-${download.quality}-${download.format}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
 
-            const filePath = path.join(DOWNLOAD_FOLDER, filename);
-            await pipeline(response.data, fs.createWriteStream(filePath));
-            
-            console.log('[Download] Completed:', filename);
-            return { success: true, filePath, filename };
-        } catch (error) {
-            console.error('[Download] Error:', error.message);
-            return { success: false, error: error.message };
-        }
+    sortByQuality(downloads) {
+        const qualityOrder = {
+            '1080p': 5, '720p': 4, '480p': 3, '360p': 2, 'auto': 1, 'unknown': 0
+        };
+        
+        return downloads.sort((a, b) => {
+            const aQuality = qualityOrder[a.quality.toLowerCase()] || 0;
+            const bQuality = qualityOrder[b.quality.toLowerCase()] || 0;
+            return bQuality - aQuality;
+        });
     }
 }
 
 // API Routes
-const downloaderService = new VideoDownloaderService();
+const downloader = new DirectVideoDownloader();
 
-app.get('/api/analyze', async (req, res) => {
+app.get('/api/direct-urls', async (req, res) => {
     try {
         const { url } = req.query;
         
         if (!url) {
-            return res.status(400).json({ error: 'URL parameter is required' });
+            return res.status(400).json({ 
+                success: false, 
+                error: 'URL parameter is required' 
+            });
         }
 
-        console.log('[API] Analyzing:', url);
-        const result = await downloaderService.getAllDownloadOptions(url);
+        console.log('[API] Getting direct URLs for:', url);
+        const result = await downloader.getAllDirectUrls(url);
         
         res.json(result);
     } catch (error) {
-        console.error('[API] Analyze error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('[API] Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 
-app.post('/api/download', async (req, res) => {
-    try {
-        const { downloadUrl, title, format = 'mp4' } = req.body;
-        
-        if (!downloadUrl) {
-            return res.status(400).json({ error: 'downloadUrl is required' });
-        }
-
-        const filename = generateFilename(title || 'video', format);
-        console.log('[API] Downloading:', filename);
-        
-        const result = await downloaderService.downloadFile(downloadUrl, filename);
-        
-        if (result.success) {
-            res.json({
-                success: true,
-                filename: result.filename,
-                downloadPath: `/downloads/${result.filename}`
-            });
-        } else {
-            res.status(500).json({ error: result.error });
-        }
-    } catch (error) {
-        console.error('[API] Download error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Serve downloaded files
-app.get('/downloads/:filename', (req, res) => {
-    const filename = req.params.filename;
-    const filePath = path.join(DOWNLOAD_FOLDER, filename);
-    
-    if (fs.existsSync(filePath)) {
-        res.download(filePath);
-    } else {
-        res.status(404).json({ error: 'File not found' });
-    }
-});
-
-// Health check
 app.get('/health', (req, res) => {
     res.json({ 
-        status: 'OK', 
+        status: 'OK',
+        message: 'Direct Video URL Extractor',
         services: Object.keys(SERVICES),
-        downloadFolder: DOWNLOAD_FOLDER
+        note: 'Returns direct CDN URLs without file storage'
     });
 });
 
-// Basic HTML interface
+// Web interface
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Multi-Site Video Downloader</title>
+    <title>🎯 Direct Video URL Extractor</title>
     <style>
-        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .container { background: #f5f5f5; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-        input[type="url"] { width: 70%; padding: 10px; margin-right: 10px; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f0f2f5; }
+        .container { background: white; padding: 30px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; margin-bottom: 10px; }
+        .subtitle { text-align: center; color: #666; margin-bottom: 30px; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 20px; }
+        input[type="url"] { flex: 1; padding: 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 16px; }
+        button { padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
         button:hover { background: #0056b3; }
-        .downloads { margin-top: 20px; }
-        .download-item { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #007bff; }
-        .loading { text-align: center; margin: 20px 0; }
-        .error { color: red; }
-        .success { color: green; }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
+        .url-item { background: #f8f9fa; padding: 20px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #007bff; }
+        .url-header { display: flex; justify-content: between; align-items: center; margin-bottom: 10px; }
+        .url-title { font-weight: bold; color: #333; }
+        .url-meta { color: #666; font-size: 0.9em; }
+        .direct-url { background: #e9ecef; padding: 10px; border-radius: 4px; font-family: monospace; word-break: break-all; margin: 10px 0; }
+        .copy-btn { background: #28a745; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-left: 10px; }
+        .copy-btn:hover { background: #1e7e34; }
+        .loading { text-align: center; margin: 20px 0; color: #007bff; }
+        .error { color: #dc3545; background: #f8d7da; padding: 15px; border-radius: 6px; }
+        .success { color: #155724; background: #d4edda; padding: 15px; border-radius: 6px; }
+        .note { background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 6px; margin-bottom: 20px; }
     </style>
 </head>
 <body>
-    <h1>🎥 Multi-Site Video Downloader</h1>
-    <p>Download videos from YouTube, Instagram, TikTok, Facebook and more!</p>
-    
     <div class="container">
-        <input type="url" id="videoUrl" placeholder="Enter video URL (YouTube, Instagram, TikTok, etc.)" />
-        <button onclick="analyzeVideo()">Analyze Video</button>
+        <h1>🎯 Direct Video URL Extractor</h1>
+        <p class="subtitle">Get direct CDN download URLs without storing files</p>
+        
+        <div class="note">
+            <strong>💡 How it works:</strong> This tool parses HTML forms from video download services and returns direct CDN URLs (googlevideo.com, fbcdn.net, etc.) that you can use directly for downloading or streaming.
+        </div>
+        
+        <div class="input-group">
+            <input type="url" id="videoUrl" placeholder="Enter video URL (YouTube, Instagram, TikTok, etc.)" />
+            <button onclick="getDirectUrls()" id="extractBtn">🎯 Extract URLs</button>
+        </div>
     </div>
     
     <div id="results"></div>
 
     <script>
-        async function analyzeVideo() {
+        async function getDirectUrls() {
             const url = document.getElementById('videoUrl').value;
             const resultsDiv = document.getElementById('results');
+            const extractBtn = document.getElementById('extractBtn');
             
             if (!url) {
                 alert('Please enter a valid URL');
                 return;
             }
             
-            resultsDiv.innerHTML = '<div class="loading">🔍 Analyzing video...</div>';
+            extractBtn.disabled = true;
+            extractBtn.textContent = '🔄 Extracting...';
+            
+            resultsDiv.innerHTML = '<div class="container"><div class="loading">🔍 Parsing HTML forms and extracting direct URLs...</div></div>';
             
             try {
-                const response = await fetch(\`/api/analyze?url=\${encodeURIComponent(url)}\`);
+                const response = await fetch('/api/direct-urls?url=' + encodeURIComponent(url));
                 const data = await response.json();
                 
                 if (data.success && data.downloads.length > 0) {
-                    let html = '<div class="container"><h3>✅ Available Downloads:</h3>';
+                    let html = \`<div class="container">
+                        <h3>✅ Direct URLs Found (\${data.total} options)</h3>
+                        <div class="success">🎉 Extracted from: \${data.services.join(', ')}</div>
+                    </div>\`;
                     
-                    data.downloads.forEach((download, index) => {
+                    data.downloads.forEach((item, index) => {
                         html += \`
-                            <div class="download-item">
-                                <strong>\${download.quality} - \${download.format.toUpperCase()}</strong>
-                                <small> (via \${download.service})</small><br>
-                                <button onclick="downloadFile('\${download.url}', 'video_\${index}', '\${download.format}')">
-                                    📥 Download
-                                </button>
+                            <div class="container">
+                                <div class="url-item">
+                                    <div class="url-header">
+                                        <div class="url-title">\${item.quality} - \${item.format.toUpperCase()} (\${item.type})</div>
+                                        <div class="url-meta">📡 \${item.service}</div>
+                                    </div>
+                                    <div class="direct-url">\${item.directUrl}</div>
+                                    <button class="copy-btn" onclick="copyToClipboard('\${item.directUrl}', this)">📋 Copy URL</button>
+                                    <a href="\${item.directUrl}" target="_blank" class="copy-btn" style="text-decoration: none; background: #17a2b8;">🔗 Open Direct</a>
+                                </div>
                             </div>
                         \`;
                     });
                     
-                    html += '</div>';
                     resultsDiv.innerHTML = html;
                 } else {
-                    resultsDiv.innerHTML = '<div class="error">❌ No downloads found. Try a different URL or service.</div>';
+                    resultsDiv.innerHTML = '<div class="container"><div class="error">❌ No direct URLs found. The video might be private, unavailable, or the services are temporarily down.</div></div>';
                 }
             } catch (error) {
-                resultsDiv.innerHTML = \`<div class="error">❌ Error: \${error.message}</div>\`;
+                resultsDiv.innerHTML = '<div class="container"><div class="error">❌ Error: ' + error.message + '</div></div>';
+            } finally {
+                extractBtn.disabled = false;
+                extractBtn.textContent = '🎯 Extract URLs';
             }
         }
         
-        async function downloadFile(downloadUrl, title, format) {
+        async function copyToClipboard(text, button) {
             try {
-                const response = await fetch('/api/download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ downloadUrl, title, format })
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    // Create download link
-                    const a = document.createElement('a');
-                    a.href = data.downloadPath;
-                    a.download = data.filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                } else {
-                    alert('Download failed: ' + data.error);
-                }
-            } catch (error) {
-                alert('Download error: ' + error.message);
+                await navigator.clipboard.writeText(text);
+                const originalText = button.textContent;
+                button.textContent = '✅ Copied!';
+                button.style.background = '#28a745';
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.style.background = '';
+                }, 2000);
+            } catch (err) {
+                alert('Copy failed. Please copy manually.');
             }
         }
+
+        document.getElementById('videoUrl').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                getDirectUrls();
+            }
+        });
     </script>
 </body>
 </html>
     `);
 });
 
-// Cleanup old files (every hour)
-setInterval(() => {
-    try {
-        const files = fs.readdirSync(DOWNLOAD_FOLDER);
-        const now = Date.now();
-        const maxAge = 2 * 60 * 60 * 1000; // 2 hours
-        
-        files.forEach(file => {
-            const filePath = path.join(DOWNLOAD_FOLDER, file);
-            const stats = fs.statSync(filePath);
-            
-            if (now - stats.mtime.getTime() > maxAge) {
-                fs.unlinkSync(filePath);
-                console.log('[Cleanup] Removed old file:', file);
-            }
-        });
-    } catch (error) {
-        console.error('[Cleanup] Error:', error.message);
-    }
-}, 60 * 60 * 1000);
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Multi-Site Video Downloader running on port ${PORT}`);
-    console.log(`📁 Downloads folder: ${DOWNLOAD_FOLDER}`);
+    console.log(`🎯 Direct Video URL Extractor running on port ${PORT}`);
     console.log(`🌐 Web interface: http://localhost:${PORT}`);
+    console.log(`📡 API endpoint: http://localhost:${PORT}/api/direct-urls`);
+    console.log('💡 Returns direct CDN URLs without file storage');
 });
 
 module.exports = app;
