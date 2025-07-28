@@ -1,11 +1,11 @@
 {
-  "name": "multi-site-video-downloader",
+  "name": "dev-tools",
   "version": "1.0.0",
   "description": "Download videos from multiple platforms using HTML parsing (SaveFrom, SaveTube, Y2Mate, etc.)",
-  "main": "app.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node app.js",
-    "dev": "nodemon app.js",
+    "start": "node index.js",
+    "dev": "nodemon index.js",
     "test": "echo \"No tests specified\" && exit 0"
   },
   "keywords": [
@@ -34,10 +34,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/multi-site-video-downloader"
+    "url": "https://github.com/PakStar92/dev-tools"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/multi-site-video-downloader/issues"
+    "url": "https://github.com/PakStar92/dev-tools/issues"
   },
-  "homepage": "https://github.com/yourusername/multi-site-video-downloader#readme"
+  "homepage": "https://github.com/PakStar92/dev-tools#readme"
 }
