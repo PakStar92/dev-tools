@@ -5,6 +5,11 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { URLSearchParams } = require('url');
+const fs = require('fs');
+const path = require('path');
+const { promisify } = require('util');
+const stream = require('stream');
+const pipeline = promisify(stream.pipeline);
 
 const app = express();
 app.use(express.json());
@@ -501,7 +506,7 @@ class DirectVideoDownloader {
 // API Routes
 const downloader = new DirectVideoDownloader();
 
-app.get('/api/direct-urls', async (req, res) => {
+app.get('/api/dl', async (req, res) => {
     try {
         const { url } = req.query;
         
